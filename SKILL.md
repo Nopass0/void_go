@@ -9,6 +9,7 @@ Use this guide when writing or reviewing Go code that talks to a VoidDB server t
 - database and collection handles
 - document CRUD
 - query builder and raw query JSON export
+- `.schema` pull and Go model generation with `vdbgo`
 - schema metadata reads and writes
 - cache access
 - Blob field file uploads and deletes
@@ -17,6 +18,7 @@ Use this guide when writing or reviewing Go code that talks to a VoidDB server t
 
 ```bash
 go get github.com/Nopass0/void_go
+go install github.com/Nopass0/void_go/cmd/vdbgo@latest
 ```
 
 ## Preferred setup
@@ -44,6 +46,41 @@ if err != nil {
 ```
 
 If the app already has a bearer token, use `VOIDDB_TOKEN` or `Config.Token`.
+
+The CLI auto-loads:
+
+- `.env`
+- `.env.local`
+- `.voiddb-go/.env`
+- `.voiddb-go/.env.local`
+
+## Schema and type generation
+
+Use the short CLI commands:
+
+```bash
+vdbgo init
+vdbgo pull
+vdbgo gen
+```
+
+Use them this way:
+
+- `vdbgo init` when a Go project has no VoidDB scaffolding yet
+- `vdbgo pull` when the server schema is the source of truth
+- `vdbgo gen` after editing the local `.schema` file
+
+Generated Go models default to:
+
+```text
+.voiddb-go/generated/models.go
+```
+
+The schema file defaults to:
+
+```text
+.voiddb-go/schema/app.schema
+```
 
 ## Query rules
 

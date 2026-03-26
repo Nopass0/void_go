@@ -8,6 +8,7 @@ It provides a small, direct API for:
 - database and collection access
 - document CRUD
 - fluent queries
+- `.schema` pull and Go model generation via `vdbgo`
 - cache access
 - schema metadata reads and writes
 - Blob field uploads into the built-in S3-compatible storage
@@ -64,8 +65,41 @@ func main() {
 		log.Fatal(err)
 	}
 
-	log.Println("inserted", id, "rows", len(rows))
+log.Println("inserted", id, "rows", len(rows))
 }
+```
+
+## Schema and Go type generation
+
+Install the CLI:
+
+```bash
+go install github.com/Nopass0/void_go/cmd/vdbgo@latest
+```
+
+Then use the short commands:
+
+```bash
+vdbgo init
+vdbgo pull
+vdbgo gen
+```
+
+What they do:
+
+- `vdbgo init` creates `.voiddb-go/config.json`, a starter `.schema`, and generated models
+- `vdbgo pull` fetches the live schema from the server and regenerates Go types
+- `vdbgo gen` regenerates Go types from the local `.schema` file
+
+Default layout:
+
+```text
+.voiddb-go/
+  config.json
+  schema/
+    app.schema
+  generated/
+    models.go
 ```
 
 ## Environment-first setup
@@ -94,6 +128,8 @@ Token-based auth also works with:
 VOIDDB_URL=https://db.lowkey.su
 VOIDDB_TOKEN=your-jwt-token
 ```
+
+The CLI reads `.env`, `.env.local`, `.voiddb-go/.env`, and `.voiddb-go/.env.local` automatically.
 
 ## Queries
 
@@ -169,6 +205,32 @@ schema.Fields = append(schema.Fields, voidorm.SchemaField{
 })
 
 _, err = client.DB("app").Collection("users").SetSchema(ctx, *schema)
+```
+
+The pulled `.schema` file uses the same database-grouped format as the TypeScript ORM:
+
+```prisma
+datasource db {
+  provider = "voiddb"
+  url      = env("VOIDDB_URL")
+}
+
+generator client {
+  provider = "voiddb-client-go"
+  output   = "../generated"
+}
+
+database {
+  name = "app"
+
+  model User {
+    id String @id @map("_id")
+    email String @unique
+    avatar Blob?
+    createdAt DateTime @default(now())
+    @@map("users")
+  }
+}
 ```
 
 ## Links

@@ -181,3 +181,8 @@ type Config struct {
 	Token   string
 	Timeout int
 }
+
+// TypegenOptions controls Go model generation from a schema project.
+type TypegenOptions struct {
+	Package string
+}

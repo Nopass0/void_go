@@ -64,7 +64,7 @@
       <h1>VoidDB Go SDK</h1>
       <p class="muted">
         Official Go companion client for VoidDB with document CRUD, fluent queries, schema metadata,
-        cache access, and Blob field uploads into the built-in S3-compatible storage.
+        cache access, Blob field uploads, and `vdbgo` commands for schema pull and Go model generation.
       </p>
       <div class="actions">
         <a class="btn primary" href="https://github.com/Nopass0/void_go">GitHub</a>
@@ -76,6 +76,7 @@
     <section class="section">
       <h2>Install</h2>
       <pre><code>go get github.com/Nopass0/void_go</code></pre>
+      <pre><code>go install github.com/Nopass0/void_go/cmd/vdbgo@latest</code></pre>
     </section>
 
     <section class="section">
@@ -119,6 +120,19 @@ if err != nil {
 }
 
 _, err = client.LoginFromEnv(context.Background())</code></pre>
+    </section>
+
+    <section class="section">
+      <h2>Schema and Go type generation</h2>
+      <pre><code>vdbgo init
+vdbgo pull
+vdbgo gen</code></pre>
+      <pre><code>.voiddb-go/
+  config.json
+  schema/
+    app.schema
+  generated/
+    models.go</code></pre>
     </section>
 
     <section class="section">
