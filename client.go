@@ -1,15 +1,4 @@
-// Package voidorm provides a type-safe Go client for VoidDB.
-// It communicates with the VoidDB REST API via JSON over HTTP/1.1.
-//
-// Usage:
-//
-//	client, err := voidorm.New(voidorm.Config{
-//	    URL:   "http://localhost:7700",
-//	    Token: os.Getenv("VOID_TOKEN"),
-//	})
-//	col := client.DB("myapp").Collection("users")
-//	id, err := col.Insert(ctx, voidorm.Doc{"name": "Alice", "age": 30})
-//	docs, err := col.Find(ctx, voidorm.NewQuery().Where("age", voidorm.Gte, 18))
+// Package voidorm provides a Go client for the VoidDB REST API.
 package voidorm
 
 import (
@@ -19,16 +8,18 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
-// ErrNotFound is returned when a document does not exist.
-var ErrNotFound = fmt.Errorf("voidorm: document not found")
+// ErrNotFound is returned when a document or cache entry does not exist.
+var ErrNotFound = fmt.Errorf("voidorm: resource not found")
 
-// Client is the VoidDB Go ORM client.
-// It is safe for concurrent use by multiple goroutines.
+// Client is the root VoidDB client. It is safe for concurrent use.
 type Client struct {
 	mu      sync.RWMutex
 	token   string
@@ -37,17 +28,18 @@ type Client struct {
 	http    *http.Client
 }
 
-// New creates a new Client from cfg.
-// Returns an error if the configuration is invalid.
+// New creates a new client from the provided config.
 func New(cfg Config) (*Client, error) {
-	if cfg.URL == "" {
+	if strings.TrimSpace(cfg.URL) == "" {
 		return nil, fmt.Errorf("voidorm: URL must not be empty")
 	}
-	cfg.URL = strings.TrimRight(cfg.URL, "/")
+	cfg.URL = strings.TrimRight(strings.TrimSpace(cfg.URL), "/")
+
 	timeout := time.Duration(cfg.Timeout) * time.Second
-	if timeout == 0 {
+	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
+
 	return &Client{
 		token: cfg.Token,
 		cfg:   cfg,
@@ -55,7 +47,25 @@ func New(cfg Config) (*Client, error) {
 	}, nil
 }
 
-// Login authenticates with username/password and stores the resulting tokens.
+// NewFromEnv builds a client from the standard VoidDB environment variables.
+func NewFromEnv() (*Client, error) {
+	timeout := 0
+	if raw := firstNonEmpty(os.Getenv("VOIDDB_TIMEOUT"), os.Getenv("VOID_TIMEOUT")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil {
+			return nil, fmt.Errorf("voidorm: invalid timeout %q: %w", raw, err)
+		}
+		timeout = parsed
+	}
+
+	return New(Config{
+		URL:     firstNonEmpty(os.Getenv("VOIDDB_URL"), os.Getenv("VOID_URL")),
+		Token:   firstNonEmpty(os.Getenv("VOIDDB_TOKEN"), os.Getenv("VOID_TOKEN")),
+		Timeout: timeout,
+	})
+}
+
+// Login authenticates with username and password and stores the resulting tokens.
 func (c *Client) Login(ctx context.Context, username, password string) (*TokenPair, error) {
 	var pair TokenPair
 	if err := c.post(ctx, "/v1/auth/login", map[string]string{
@@ -71,22 +81,32 @@ func (c *Client) Login(ctx context.Context, username, password string) (*TokenPa
 	return &pair, nil
 }
 
+// LoginFromEnv authenticates using VOIDDB_USERNAME/VOIDDB_PASSWORD.
+func (c *Client) LoginFromEnv(ctx context.Context) (*TokenPair, error) {
+	username := firstNonEmpty(os.Getenv("VOIDDB_USERNAME"), os.Getenv("VOID_USERNAME"))
+	password := firstNonEmpty(os.Getenv("VOIDDB_PASSWORD"), os.Getenv("VOID_PASSWORD"))
+	if username == "" || password == "" {
+		return nil, fmt.Errorf("voidorm: VOIDDB_USERNAME and VOIDDB_PASSWORD are required")
+	}
+	return c.Login(ctx, username, password)
+}
+
 // Me returns the authenticated user.
 func (c *Client) Me(ctx context.Context) (*User, error) {
-	var u User
-	if err := c.get(ctx, "/v1/auth/me", &u); err != nil {
+	var user User
+	if err := c.get(ctx, "/v1/auth/me", &user); err != nil {
 		return nil, err
 	}
-	return &u, nil
+	return &user, nil
 }
 
 // Stats returns engine-level performance metrics.
 func (c *Client) Stats(ctx context.Context) (*EngineStats, error) {
-	var s EngineStats
-	if err := c.get(ctx, "/v1/stats", &s); err != nil {
+	var stats EngineStats
+	if err := c.get(ctx, "/v1/stats", &stats); err != nil {
 		return nil, err
 	}
-	return &s, nil
+	return &stats, nil
 }
 
 // ListDatabases returns all database names.
@@ -105,20 +125,35 @@ func (c *Client) CreateDatabase(ctx context.Context, name string) error {
 	return c.post(ctx, "/v1/databases", map[string]string{"name": name}, nil)
 }
 
-// DB returns a Database handle for the given name.
+// DropDatabase removes a database.
+func (c *Client) DropDatabase(ctx context.Context, name string) error {
+	return c.deleteReq(ctx, "/v1/databases/"+pathSegment(name))
+}
+
+// DB returns a database handle.
 func (c *Client) DB(name string) *Database {
 	return &Database{client: c, name: name}
 }
 
-// --- Database ----------------------------------------------------------------
+// Cache returns a handle for the built-in cache API.
+func (c *Client) Cache() *Cache {
+	return &Cache{client: c}
+}
 
-// Database provides access to collections within a named VoidDB database.
+// Token returns the current bearer token.
+func (c *Client) Token() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.token
+}
+
+// Database provides access to collections within a named database.
 type Database struct {
 	client *Client
 	name   string
 }
 
-// Collection returns a Collection handle for the given name.
+// Collection returns a collection handle for the given name.
 func (db *Database) Collection(name string) *Collection {
 	return &Collection{client: db.client, db: db.name, name: name}
 }
@@ -128,7 +163,7 @@ func (db *Database) ListCollections(ctx context.Context) ([]string, error) {
 	var res struct {
 		Collections []string `json:"collections"`
 	}
-	if err := db.client.get(ctx, fmt.Sprintf("/v1/databases/%s/collections", db.name), &res); err != nil {
+	if err := db.client.get(ctx, fmt.Sprintf("/v1/databases/%s/collections", pathSegment(db.name)), &res); err != nil {
 		return nil, err
 	}
 	return res.Collections, nil
@@ -136,30 +171,42 @@ func (db *Database) ListCollections(ctx context.Context) ([]string, error) {
 
 // CreateCollection explicitly creates a new collection.
 func (db *Database) CreateCollection(ctx context.Context, name string) error {
-	return db.client.post(ctx, fmt.Sprintf("/v1/databases/%s/collections", db.name),
-		map[string]string{"name": name}, nil)
+	return db.client.post(
+		ctx,
+		fmt.Sprintf("/v1/databases/%s/collections", pathSegment(db.name)),
+		map[string]string{"name": name},
+		nil,
+	)
 }
 
-// --- Collection --------------------------------------------------------------
+// DropCollection removes a collection.
+func (db *Database) DropCollection(ctx context.Context, name string) error {
+	return db.client.deleteReq(
+		ctx,
+		fmt.Sprintf("/v1/databases/%s/collections/%s", pathSegment(db.name), pathSegment(name)),
+	)
+}
 
-// Collection provides full CRUD and query operations on a VoidDB collection.
+// Collection provides CRUD and query operations for one collection.
 type Collection struct {
 	client *Client
 	db     string
 	name   string
 }
 
-// path builds the API path for this collection, optionally appending suffix.
 func (col *Collection) path(suffix ...string) string {
-	p := fmt.Sprintf("/v1/databases/%s/%s", col.db, col.name)
-	if len(suffix) > 0 {
-		p += "/" + strings.Join(suffix, "/")
+	base := fmt.Sprintf("/v1/databases/%s/%s", pathSegment(col.db), pathSegment(col.name))
+	if len(suffix) == 0 {
+		return base
 	}
-	return p
+	escaped := make([]string, len(suffix))
+	for i, part := range suffix {
+		escaped[i] = pathSegment(part)
+	}
+	return base + "/" + strings.Join(escaped, "/")
 }
 
 // Insert creates a new document and returns its _id.
-// If doc has an "_id" key, it is used as the primary key.
 func (col *Collection) Insert(ctx context.Context, doc Doc) (string, error) {
 	var res struct {
 		ID string `json:"_id"`
@@ -170,12 +217,11 @@ func (col *Collection) Insert(ctx context.Context, doc Doc) (string, error) {
 	return res.ID, nil
 }
 
-// FindByID retrieves a document by its _id.
-// Returns ErrNotFound if no document with that id exists.
+// FindByID retrieves a document by _id.
 func (col *Collection) FindByID(ctx context.Context, id string) (Doc, error) {
 	var doc Doc
 	if err := col.client.get(ctx, col.path(id), &doc); err != nil {
-		if strings.Contains(err.Error(), "404") || strings.Contains(err.Error(), "not found") {
+		if isNotFound(err) {
 			return nil, ErrNotFound
 		}
 		return nil, err
@@ -183,20 +229,30 @@ func (col *Collection) FindByID(ctx context.Context, id string) (Doc, error) {
 	return doc, nil
 }
 
-// Find returns all documents matching query (nil = all documents).
+// Get is an alias for FindByID.
+func (col *Collection) Get(ctx context.Context, id string) (Doc, error) {
+	return col.FindByID(ctx, id)
+}
+
+// Find returns documents matching the query. Nil means "all documents".
 func (col *Collection) Find(ctx context.Context, q *Query) ([]Doc, error) {
-	result, err := col.FindWithCount(ctx, q)
+	res, err := col.FindWithCount(ctx, q)
 	if err != nil {
 		return nil, err
 	}
-	return result.Docs, nil
+	return res.Docs, nil
 }
 
-// FindWithCount returns documents and the total count before limit/skip.
+// Query is an alias for Find.
+func (col *Collection) Query(ctx context.Context, q *Query) ([]Doc, error) {
+	return col.Find(ctx, q)
+}
+
+// FindWithCount returns the documents plus total count before limit/skip.
 func (col *Collection) FindWithCount(ctx context.Context, q *Query) (*QueryResult, error) {
-	spec := querySpec{}
+	spec := QuerySpec{}
 	if q != nil {
-		spec = q.toSpec()
+		spec = q.Spec()
 	}
 	var res queryResult
 	if err := col.client.post(ctx, col.path("query"), spec, &res); err != nil {
@@ -205,7 +261,7 @@ func (col *Collection) FindWithCount(ctx context.Context, q *Query) (*QueryResul
 	return &QueryResult{Docs: res.Results, Count: res.Count}, nil
 }
 
-// Count returns the number of documents in the collection.
+// Count returns the total number of documents in the collection.
 func (col *Collection) Count(ctx context.Context) (int64, error) {
 	var res struct {
 		Count int64 `json:"count"`
@@ -216,13 +272,21 @@ func (col *Collection) Count(ctx context.Context) (int64, error) {
 	return res.Count, nil
 }
 
+// CountMatching returns the number of matching documents using the query endpoint.
+func (col *Collection) CountMatching(ctx context.Context, q *Query) (int64, error) {
+	res, err := col.FindWithCount(ctx, q)
+	if err != nil {
+		return 0, err
+	}
+	return res.Count, nil
+}
+
 // Replace fully replaces the document with the given id.
 func (col *Collection) Replace(ctx context.Context, id string, doc Doc) error {
 	return col.client.put(ctx, col.path(id), doc)
 }
 
-// Patch partially updates a document (merges the given fields).
-// Returns the updated document.
+// Patch partially updates a document and returns the updated value.
 func (col *Collection) Patch(ctx context.Context, id string, patch Doc) (Doc, error) {
 	var updated Doc
 	if err := col.client.patchReq(ctx, col.path(id), patch, &updated); err != nil {
@@ -236,7 +300,142 @@ func (col *Collection) Delete(ctx context.Context, id string) error {
 	return col.client.deleteReq(ctx, col.path(id))
 }
 
-// --- HTTP helpers ------------------------------------------------------------
+// GetSchema returns the collection schema metadata.
+func (col *Collection) GetSchema(ctx context.Context) (*CollectionSchema, error) {
+	var schema CollectionSchema
+	if err := col.client.get(ctx, col.path("schema"), &schema); err != nil {
+		return nil, err
+	}
+	return &schema, nil
+}
+
+// SetSchema replaces the collection schema metadata.
+func (col *Collection) SetSchema(ctx context.Context, schema CollectionSchema) (*CollectionSchema, error) {
+	var updated CollectionSchema
+	if err := col.client.doJSON(ctx, http.MethodPut, col.path("schema"), schema, &updated); err != nil {
+		return nil, err
+	}
+	return &updated, nil
+}
+
+// UploadFile uploads file contents into a Blob field on the target document.
+func (col *Collection) UploadFile(ctx context.Context, id, field string, body io.Reader, opts UploadFileOptions) (*BlobRef, error) {
+	if body == nil {
+		return nil, fmt.Errorf("voidorm: upload body must not be nil")
+	}
+
+	path := col.path(id, "files", field)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, col.client.cfg.URL+path, body)
+	if err != nil {
+		return nil, err
+	}
+
+	query := req.URL.Query()
+	if opts.Bucket != "" {
+		query.Set("bucket", opts.Bucket)
+	}
+	if opts.Key != "" {
+		query.Set("key", opts.Key)
+	}
+	if opts.Filename != "" {
+		query.Set("filename", opts.Filename)
+		req.Header.Set("X-File-Name", opts.Filename)
+	}
+	req.URL.RawQuery = query.Encode()
+
+	if opts.ContentType != "" {
+		req.Header.Set("Content-Type", opts.ContentType)
+	} else {
+		req.Header.Set("Content-Type", "application/octet-stream")
+	}
+	for key, value := range opts.Metadata {
+		req.Header.Set("X-Blob-Meta-"+key, value)
+	}
+
+	var res struct {
+		Field string  `json:"field"`
+		Blob  BlobRef `json:"blob"`
+	}
+	if err := col.client.do(req, &res); err != nil {
+		return nil, err
+	}
+	return &res.Blob, nil
+}
+
+// DeleteFile removes the Blob field and deletes the stored object.
+func (col *Collection) DeleteFile(ctx context.Context, id, field string) error {
+	return col.client.deleteReq(ctx, col.path(id, "files", field))
+}
+
+// BlobURL returns the best URL for the blob reference.
+func (col *Collection) BlobURL(ref BlobRef) string {
+	if ref.URL != "" {
+		return ref.URL
+	}
+	base := strings.TrimRight(col.client.cfg.URL, "/")
+	parts := strings.Split(ref.Key, "/")
+	for i := range parts {
+		parts[i] = url.PathEscape(parts[i])
+	}
+	return base + "/s3/" + url.PathEscape(ref.Bucket) + "/" + strings.Join(parts, "/")
+}
+
+// Cache provides access to VoidDB's key-value cache API.
+type Cache struct {
+	client *Client
+}
+
+// GetRaw fetches a cache entry as a raw string.
+func (c *Cache) GetRaw(ctx context.Context, key string) (string, error) {
+	var res CacheGetResponse
+	if err := c.client.get(ctx, "/v1/cache/"+pathSegment(key), &res); err != nil {
+		if isNotFound(err) {
+			return "", ErrNotFound
+		}
+		return "", err
+	}
+	return res.Value, nil
+}
+
+// GetJSON fetches a cache entry and unmarshals it into out.
+func (c *Cache) GetJSON(ctx context.Context, key string, out interface{}) error {
+	raw, err := c.GetRaw(ctx, key)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal([]byte(raw), out); err != nil {
+		return fmt.Errorf("voidorm: unmarshal cached value: %w", err)
+	}
+	return nil
+}
+
+// Set stores a cache entry. Non-string values are JSON-encoded automatically.
+func (c *Cache) Set(ctx context.Context, key string, value interface{}, ttlSeconds int) error {
+	var raw string
+	switch typed := value.(type) {
+	case string:
+		raw = typed
+	case []byte:
+		raw = string(typed)
+	default:
+		data, err := json.Marshal(value)
+		if err != nil {
+			return fmt.Errorf("voidorm: marshal cache value: %w", err)
+		}
+		raw = string(data)
+	}
+
+	req := CacheSetRequest{Value: raw}
+	if ttlSeconds > 0 {
+		req.TTL = ttlSeconds
+	}
+	return c.client.post(ctx, "/v1/cache/"+pathSegment(key), req, nil)
+}
+
+// Delete removes a cache entry.
+func (c *Cache) Delete(ctx context.Context, key string) error {
+	return c.client.deleteReq(ctx, "/v1/cache/"+pathSegment(key))
+}
 
 func (c *Client) get(ctx context.Context, path string, out interface{}) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.cfg.URL+path, nil)
@@ -273,6 +472,7 @@ func (c *Client) doJSON(ctx context.Context, method, path string, body, out inte
 			return fmt.Errorf("voidorm: marshal request: %w", err)
 		}
 	}
+
 	req, err := http.NewRequestWithContext(ctx, method, c.cfg.URL+path, &buf)
 	if err != nil {
 		return err
@@ -297,13 +497,13 @@ func (c *Client) do(req *http.Request, out interface{}) error {
 
 	if resp.StatusCode >= 400 {
 		data, _ := io.ReadAll(resp.Body)
-		var errBody struct {
+		var body struct {
 			Error string `json:"error"`
 		}
-		_ = json.Unmarshal(data, &errBody)
-		msg := errBody.Error
+		_ = json.Unmarshal(data, &body)
+		msg := body.Error
 		if msg == "" {
-			msg = string(data)
+			msg = strings.TrimSpace(string(data))
 		}
 		return fmt.Errorf("voidorm: %d %s", resp.StatusCode, msg)
 	}
@@ -314,4 +514,21 @@ func (c *Client) do(req *http.Request, out interface{}) error {
 		}
 	}
 	return nil
+}
+
+func pathSegment(value string) string {
+	return url.PathEscape(strings.TrimSpace(value))
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func isNotFound(err error) bool {
+	return strings.Contains(err.Error(), "404")
 }

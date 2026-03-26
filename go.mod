@@ -1,7 +1,3 @@
-module github.com/voiddb/void/orm/go
+module github.com/Nopass0/void_go
 
 go 1.22
-
-require (
-	github.com/google/uuid v1.6.0
-)

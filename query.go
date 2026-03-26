@@ -1,20 +1,12 @@
-// Package voidorm – query.go implements the fluent query builder.
+// Package voidorm implements the fluent query builder for the Go client.
 package voidorm
 
+import "encoding/json"
+
 // Query is an immutable query specification built with a fluent API.
-// Each method returns a new Query value; the original is not modified.
-//
-// Example:
-//
-//	q := voidorm.NewQuery().
-//	    Where("age", voidorm.Gte, 18).
-//	    Where("active", voidorm.Eq, true).
-//	    OrderBy("name", voidorm.Asc).
-//	    Limit(25).
-//	    Skip(0)
 type Query struct {
-	filters []filterClause
-	sorts   []sortClause
+	filters []QueryNode
+	sorts   []QuerySort
 	limit   *int
 	skip    *int
 }
@@ -22,19 +14,24 @@ type Query struct {
 // NewQuery returns an empty Query that matches all documents.
 func NewQuery() *Query { return &Query{} }
 
-// Where adds a WHERE filter clause.
-// The returned Query is a new value; the receiver is unchanged.
+// Where adds a leaf predicate. Multiple Where calls are combined as AND.
 func (q *Query) Where(field string, op FilterOp, value interface{}) *Query {
 	cp := q.clone()
-	cp.filters = append(cp.filters, filterClause{Field: field, Op: op, Value: value})
+	cp.filters = append(cp.filters, QueryNode{Field: field, Op: op, Value: value})
+	return cp
+}
+
+// WhereNode adds a fully-specified predicate or logical subtree.
+func (q *Query) WhereNode(node QueryNode) *Query {
+	cp := q.clone()
+	cp.filters = append(cp.filters, node)
 	return cp
 }
 
 // OrderBy adds a sort level.
-// Call multiple times to add secondary, tertiary, etc. sort keys.
 func (q *Query) OrderBy(field string, dir SortDir) *Query {
 	cp := q.clone()
-	cp.sorts = append(cp.sorts, sortClause{Field: field, Dir: dir})
+	cp.sorts = append(cp.sorts, QuerySort{Field: field, Dir: dir})
 	return cp
 }
 
@@ -45,46 +42,51 @@ func (q *Query) Limit(n int) *Query {
 	return cp
 }
 
-// Skip skips the first n results (for pagination).
+// Skip skips the first n results.
 func (q *Query) Skip(n int) *Query {
 	cp := q.clone()
 	cp.skip = intPtr(n)
 	return cp
 }
 
-// Page is a convenience method that sets Skip and Limit for page-based pagination.
-// page is 0-indexed.
+// Page sets Skip and Limit for page-based pagination.
 func (q *Query) Page(page, pageSize int) *Query {
 	return q.Skip(page * pageSize).Limit(pageSize)
 }
 
-// toSpec converts the Query into the JSON wire format.
-func (q *Query) toSpec() querySpec {
-	spec := querySpec{
+// Spec returns the JSON wire representation for the query.
+func (q *Query) Spec() QuerySpec {
+	spec := QuerySpec{
 		Limit: q.limit,
 		Skip:  q.skip,
 	}
-	if len(q.filters) > 0 {
-		spec.Where = make([]filterClause, len(q.filters))
-		copy(spec.Where, q.filters)
-	}
 	if len(q.sorts) > 0 {
-		spec.OrderBy = make([]sortClause, len(q.sorts))
-		copy(spec.OrderBy, q.sorts)
+		spec.OrderBy = append([]QuerySort(nil), q.sorts...)
+	}
+	if len(q.filters) == 1 {
+		node := q.filters[0]
+		spec.Where = &node
+		return spec
+	}
+	if len(q.filters) > 1 {
+		node := QueryNode{AND: append([]QueryNode(nil), q.filters...)}
+		spec.Where = &node
 	}
 	return spec
 }
 
-// clone returns a deep copy of q.
+// JSON marshals the wire representation for logging or inspection.
+func (q *Query) JSON() ([]byte, error) {
+	return json.Marshal(q.Spec())
+}
+
 func (q *Query) clone() *Query {
 	cp := &Query{
-		filters: make([]filterClause, len(q.filters)),
-		sorts:   make([]sortClause, len(q.sorts)),
+		filters: append([]QueryNode(nil), q.filters...),
+		sorts:   append([]QuerySort(nil), q.sorts...),
 		limit:   q.limit,
 		skip:    q.skip,
 	}
-	copy(cp.filters, q.filters)
-	copy(cp.sorts, q.sorts)
 	return cp
 }
 

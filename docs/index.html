@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VoidDB Go SDK</title>
+  <style>
+    :root {
+      --bg: #07101f;
+      --panel: rgba(13, 20, 39, 0.92);
+      --line: rgba(111, 124, 255, 0.20);
+      --text: #eef3ff;
+      --muted: #97a4c5;
+      --blue: #6f7cff;
+      --blue2: #98a5ff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--text);
+      font: 16px/1.6 "Segoe UI", Arial, sans-serif;
+      background:
+        radial-gradient(circle at top left, rgba(111,124,255,.18), transparent 28%),
+        linear-gradient(180deg, #0a1020 0%, #05070d 100%);
+    }
+    .wrap { max-width: 1080px; margin: 0 auto; padding: 32px 24px 80px; }
+    .hero, .section {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      padding: 24px;
+      margin-bottom: 18px;
+    }
+    .hero h1, .section h2 { margin: 0 0 12px; }
+    .muted { color: var(--muted); }
+    .actions { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 18px; }
+    .btn {
+      display: inline-block;
+      padding: 12px 18px;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      background: #121b36;
+      color: var(--text);
+      text-decoration: none;
+    }
+    .btn.primary { background: linear-gradient(135deg, #5968ff, #404adf); }
+    pre {
+      overflow-x: auto;
+      margin: 14px 0 0;
+      padding: 18px;
+      border-radius: 16px;
+      border: 1px solid rgba(120,136,255,.16);
+      background: rgba(4, 7, 16, 0.96);
+    }
+    code { font-family: Consolas, "Cascadia Code", monospace; color: #dfe5ff; }
+    a { color: var(--blue2); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .footer { color: var(--muted); font-size: 14px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <section class="hero">
+      <h1>VoidDB Go SDK</h1>
+      <p class="muted">
+        Official Go companion client for VoidDB with document CRUD, fluent queries, schema metadata,
+        cache access, and Blob field uploads into the built-in S3-compatible storage.
+      </p>
+      <div class="actions">
+        <a class="btn primary" href="https://github.com/Nopass0/void_go">GitHub</a>
+        <a class="btn" href="https://github.com/Nopass0/void">Core server</a>
+        <a class="btn" href="https://nopass0.github.io/void/">Server docs</a>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>Install</h2>
+      <pre><code>go get github.com/Nopass0/void_go</code></pre>
+    </section>
+
+    <section class="section">
+      <h2>Quick start</h2>
+      <pre><code>client, err := voidorm.New(voidorm.Config{
+    URL: "http://localhost:7700",
+})
+if err != nil {
+    panic(err)
+}
+
+_, err = client.Login(context.Background(), "admin", "admin")
+if err != nil {
+    panic(err)
+}
+
+users := client.DB("app").Collection("users")
+
+id, err := users.Insert(context.Background(), voidorm.Doc{
+    "name": "Alice",
+    "active": true,
+})
+
+rows, err := users.Query(
+    context.Background(),
+    voidorm.NewQuery().
+        Where("active", voidorm.Eq, true).
+        OrderBy("name", voidorm.Asc).
+        Limit(25),
+)</code></pre>
+    </section>
+
+    <section class="section">
+      <h2>Environment-first setup</h2>
+      <pre><code>VOIDDB_URL=https://db.lowkey.su
+VOIDDB_USERNAME=admin
+VOIDDB_PASSWORD=your-password</code></pre>
+      <pre><code>client, err := voidorm.NewFromEnv()
+if err != nil {
+    panic(err)
+}
+
+_, err = client.LoginFromEnv(context.Background())</code></pre>
+    </section>
+
+    <section class="section">
+      <h2>Blob fields and uploads</h2>
+      <pre><code>ref, err := client.DB("media").Collection("assets").UploadFile(
+    context.Background(),
+    "asset-123",
+    "original",
+    strings.NewReader("hello voiddb"),
+    voidorm.UploadFileOptions{
+        Filename: "hello.txt",
+        ContentType: "text/plain",
+    },
+)
+if err != nil {
+    panic(err)
+}
+
+fmt.Println(ref.URL)</code></pre>
+    </section>
+
+    <section class="section">
+      <h2>Query JSON</h2>
+      <pre><code>q := voidorm.NewQuery().
+    Where("age", voidorm.Gte, 18).
+    Limit(10)
+
+payload, err := q.JSON()</code></pre>
+    </section>
+
+    <p class="footer">
+      VoidDB Go SDK &copy; <span id="current-year"></span> &middot;
+      <a href="https://github.com/Nopass0/void_go">github.com/Nopass0/void_go</a>
+    </p>
+  </div>
+  <script>
+    document.getElementById("current-year").textContent = new Date().getFullYear();
+  </script>
+</body>
+</html>
