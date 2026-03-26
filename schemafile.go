@@ -3,6 +3,7 @@ package voidorm
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strconv"
@@ -44,6 +45,63 @@ type SchemaManager struct {
 // Schema returns a schema helper bound to this client.
 func (c *Client) Schema() *SchemaManager {
 	return &SchemaManager{client: c}
+}
+
+// Plan compares the live schema with the desired project and returns planned operations.
+func (m *SchemaManager) Plan(ctx context.Context, project *SchemaProject, opts *SchemaPlanOptions) (*SchemaPlan, error) {
+	current, err := m.Pull(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	forceDrop := false
+	if opts != nil {
+		forceDrop = opts.ForceDrop
+	}
+
+	return planSchemaDiff(current, project, forceDrop), nil
+}
+
+// Push applies the desired schema to the server and returns the executed plan.
+func (m *SchemaManager) Push(ctx context.Context, project *SchemaProject, opts *SchemaPushOptions) (*SchemaPlan, error) {
+	plan, err := m.Plan(ctx, project, &SchemaPlanOptions{
+		ForceDrop: opts != nil && opts.ForceDrop,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if opts != nil && opts.DryRun {
+		return plan, nil
+	}
+
+	for _, op := range plan.Operations {
+		switch op.Type {
+		case SchemaOpCreateDatabase:
+			if err := m.client.CreateDatabase(ctx, op.Database); err != nil {
+				return nil, err
+			}
+		case SchemaOpCreateCollection:
+			if err := m.client.DB(op.Database).CreateCollection(ctx, op.Collection); err != nil {
+				return nil, err
+			}
+		case SchemaOpSetSchema:
+			if op.Schema == nil {
+				continue
+			}
+			if _, err := m.client.DB(op.Database).Collection(op.Collection).SetSchema(ctx, *op.Schema); err != nil {
+				return nil, err
+			}
+		case SchemaOpDeleteCollection:
+			if err := m.client.DB(op.Database).DropCollection(ctx, op.Collection); err != nil {
+				return nil, err
+			}
+		default:
+			return nil, fmt.Errorf("unknown schema operation: %s", op.Type)
+		}
+	}
+
+	return plan, nil
 }
 
 // Pull fetches all collection schemas from the server and returns a schema project.
@@ -319,6 +377,199 @@ func ParseSchemaFile(source string) (*SchemaProject, error) {
 		return nil, err
 	}
 	return project, nil
+}
+
+func planSchemaDiff(current, desired *SchemaProject, forceDrop bool) *SchemaPlan {
+	currentModels := projectModelMap(current)
+	desiredModels := projectModelMap(desired)
+	currentDBs := projectDatabaseSet(current)
+	desiredDBs := projectDatabaseSet(desired)
+	operations := make([]SchemaOperation, 0)
+	createdDatabases := map[string]bool{}
+
+	keys := sortedKeys(desiredModels)
+	for _, key := range keys {
+		desiredModel := desiredModels[key]
+		schema := normalizeCollectionSchema(desiredModel.Schema)
+		database := schema.Database
+		collection := schema.Collection
+
+		if !currentDBs[database] && !createdDatabases[database] {
+			createdDatabases[database] = true
+			operations = append(operations, SchemaOperation{
+				Type:     SchemaOpCreateDatabase,
+				Database: database,
+				Summary:  fmt.Sprintf("create database %s", database),
+			})
+		}
+
+		existing, ok := currentModels[key]
+		if !ok {
+			operations = append(operations, SchemaOperation{
+				Type:       SchemaOpCreateCollection,
+				Database:   database,
+				Collection: collection,
+				Summary:    fmt.Sprintf("create collection %s/%s", database, collection),
+			})
+			copySchema := schema
+			operations = append(operations, SchemaOperation{
+				Type:       SchemaOpSetSchema,
+				Database:   database,
+				Collection: collection,
+				Schema:     &copySchema,
+				Summary:    fmt.Sprintf("set schema %s/%s", database, collection),
+			})
+			continue
+		}
+
+		if canonicalSchema(existing.Schema) != canonicalSchema(schema) {
+			copySchema := schema
+			operations = append(operations, SchemaOperation{
+				Type:       SchemaOpSetSchema,
+				Database:   database,
+				Collection: collection,
+				Schema:     &copySchema,
+				Summary:    fmt.Sprintf("update schema %s/%s", database, collection),
+			})
+		}
+	}
+
+	if forceDrop {
+		for _, key := range sortedKeys(currentModels) {
+			if _, ok := desiredModels[key]; ok {
+				continue
+			}
+			schema := normalizeCollectionSchema(currentModels[key].Schema)
+			if !desiredDBs[schema.Database] {
+				continue
+			}
+			operations = append(operations, SchemaOperation{
+				Type:       SchemaOpDeleteCollection,
+				Database:   schema.Database,
+				Collection: schema.Collection,
+				Summary:    fmt.Sprintf("drop collection %s/%s", schema.Database, schema.Collection),
+			})
+		}
+	}
+
+	return &SchemaPlan{Operations: operations}
+}
+
+func projectModelMap(project *SchemaProject) map[string]SchemaModel {
+	out := map[string]SchemaModel{}
+	if project == nil {
+		return out
+	}
+
+	for _, model := range project.Models {
+		schema := normalizeCollectionSchema(model.Schema)
+		out[fmt.Sprintf("%s/%s", schema.Database, schema.Collection)] = SchemaModel{
+			Name: model.Name,
+			Schema: CollectionSchema{
+				Database:   schema.Database,
+				Collection: schema.Collection,
+				Model:      schema.Model,
+				Fields:     schema.Fields,
+				Indexes:    schema.Indexes,
+			},
+		}
+	}
+	return out
+}
+
+func projectDatabaseSet(project *SchemaProject) map[string]bool {
+	out := map[string]bool{}
+	if project == nil {
+		return out
+	}
+	for _, model := range project.Models {
+		database := strings.TrimSpace(model.Schema.Database)
+		if database != "" {
+			out[database] = true
+		}
+	}
+	return out
+}
+
+func normalizeCollectionSchema(schema CollectionSchema) CollectionSchema {
+	normalized := CollectionSchema{
+		Database:   firstSchemaValue(schema.Database, "default"),
+		Collection: firstSchemaValue(schema.Collection, defaultCollectionName(schema.Model)),
+		Model:      firstSchemaValue(schema.Model, defaultModelName(schema.Database, schema.Collection)),
+		Fields:     make([]SchemaField, 0, len(schema.Fields)),
+		Indexes:    make([]SchemaIndex, 0, len(schema.Indexes)),
+	}
+
+	for _, field := range schema.Fields {
+		next := field
+		if next.IsID && next.MappedName == "" && next.Name != "_id" {
+			next.MappedName = "_id"
+		}
+		if next.Relation != nil {
+			rel := *next.Relation
+			if rel.Fields != nil {
+				rel.Fields = append([]string(nil), rel.Fields...)
+			}
+			if rel.References != nil {
+				rel.References = append([]string(nil), rel.References...)
+			}
+			sort.Strings(rel.Fields)
+			sort.Strings(rel.References)
+			next.Relation = &rel
+		}
+		normalized.Fields = append(normalized.Fields, next)
+	}
+
+	for _, index := range schema.Indexes {
+		next := index
+		next.Fields = append([]string(nil), index.Fields...)
+		normalized.Indexes = append(normalized.Indexes, next)
+	}
+
+	sort.Slice(normalized.Fields, func(i, j int) bool {
+		return storageFieldName(normalized.Fields[i]) < storageFieldName(normalized.Fields[j])
+	})
+	sort.Slice(normalized.Indexes, func(i, j int) bool {
+		left := fmt.Sprintf("%s|%s|%t|%t", strings.Join(normalized.Indexes[i].Fields, ","), normalized.Indexes[i].Name, normalized.Indexes[i].Unique, normalized.Indexes[i].Primary)
+		right := fmt.Sprintf("%s|%s|%t|%t", strings.Join(normalized.Indexes[j].Fields, ","), normalized.Indexes[j].Name, normalized.Indexes[j].Unique, normalized.Indexes[j].Primary)
+		return left < right
+	})
+
+	return normalized
+}
+
+func canonicalSchema(schema CollectionSchema) string {
+	normalized := normalizeCollectionSchema(schema)
+	data, err := json.Marshal(normalized)
+	if err != nil {
+		return fmt.Sprintf("%#v", normalized)
+	}
+	return string(data)
+}
+
+func storageFieldName(field SchemaField) string {
+	if strings.TrimSpace(field.MappedName) != "" {
+		return field.MappedName
+	}
+	return field.Name
+}
+
+func firstSchemaValue(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func sortedKeys[T any](input map[string]T) []string {
+	keys := make([]string, 0, len(input))
+	for key := range input {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func cleanSchemaLine(line string) string {

@@ -8,7 +8,8 @@ It provides a small, direct API for:
 - database and collection access
 - document CRUD
 - fluent queries
-- `.schema` pull and Go model generation via `vdbgo`
+- `.schema` pull, plan, push, and Go model generation via `vdbgo`
+- local migration files and deploy/status workflow via `vdbgo`
 - cache access
 - schema metadata reads and writes
 - Blob field uploads into the built-in S3-compatible storage
@@ -82,24 +83,47 @@ Then use the short commands:
 ```bash
 vdbgo init
 vdbgo pull
+vdbgo plan
+vdbgo push
 vdbgo gen
+vdbgo dev --name add_users
+vdbgo deploy
+vdbgo status
 ```
 
 What they do:
 
 - `vdbgo init` creates `.voiddb-go/config.json`, a starter `.schema`, and generated models
 - `vdbgo pull` fetches the live schema from the server and regenerates Go types
+- `vdbgo plan` compares the local schema file to the live server without changing anything
+- `vdbgo push` applies the local schema file to the live server
 - `vdbgo gen` regenerates Go types from the local `.schema` file
+- `vdbgo dev --name ...` writes a migration directory from the current diff and can apply it immediately
+- `vdbgo deploy` applies pending local migrations
+- `vdbgo status` shows which local migrations are pending or already applied
 
 Default layout:
 
 ```text
 .voiddb-go/
   config.json
+  migrations/
   schema/
     app.schema
   generated/
     models.go
+```
+
+`plan`, `push`, and migrations only affect databases explicitly declared in the `.schema` file. Undeclared databases are left untouched.
+
+Example migration flow:
+
+```bash
+vdbgo pull
+vdbgo plan
+vdbgo dev --name add_user_status
+vdbgo status
+vdbgo deploy
 ```
 
 ## Environment-first setup

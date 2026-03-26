@@ -186,3 +186,38 @@ type Config struct {
 type TypegenOptions struct {
 	Package string
 }
+
+// SchemaOperationType identifies one schema change step.
+type SchemaOperationType string
+
+const (
+	SchemaOpCreateDatabase   SchemaOperationType = "create_database"
+	SchemaOpCreateCollection SchemaOperationType = "create_collection"
+	SchemaOpSetSchema        SchemaOperationType = "set_schema"
+	SchemaOpDeleteCollection SchemaOperationType = "delete_collection"
+)
+
+// SchemaOperation is one planned schema change.
+type SchemaOperation struct {
+	Type       SchemaOperationType `json:"type"`
+	Database   string              `json:"database,omitempty"`
+	Collection string              `json:"collection,omitempty"`
+	Schema     *CollectionSchema   `json:"schema,omitempty"`
+	Summary    string              `json:"summary"`
+}
+
+// SchemaPlan is the diff between the live server schema and the desired schema file.
+type SchemaPlan struct {
+	Operations []SchemaOperation `json:"operations"`
+}
+
+// SchemaPlanOptions control diff generation.
+type SchemaPlanOptions struct {
+	ForceDrop bool
+}
+
+// SchemaPushOptions control schema application.
+type SchemaPushOptions struct {
+	DryRun    bool
+	ForceDrop bool
+}

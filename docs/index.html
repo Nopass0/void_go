@@ -64,7 +64,8 @@
       <h1>VoidDB Go SDK</h1>
       <p class="muted">
         Official Go companion client for VoidDB with document CRUD, fluent queries, schema metadata,
-        cache access, Blob field uploads, and `vdbgo` commands for schema pull and Go model generation.
+        cache access, Blob field uploads, and `vdbgo` commands for schema pull, plan, push, migrations,
+        and Go model generation.
       </p>
       <div class="actions">
         <a class="btn primary" href="https://github.com/Nopass0/void_go">GitHub</a>
@@ -126,13 +127,31 @@ _, err = client.LoginFromEnv(context.Background())</code></pre>
       <h2>Schema and Go type generation</h2>
       <pre><code>vdbgo init
 vdbgo pull
-vdbgo gen</code></pre>
+vdbgo plan
+vdbgo push
+vdbgo gen
+vdbgo dev --name add_users
+vdbgo deploy
+vdbgo status</code></pre>
       <pre><code>.voiddb-go/
   config.json
+  migrations/
   schema/
     app.schema
   generated/
     models.go</code></pre>
+      <pre><code># inspect the diff
+vdbgo plan
+
+# apply the current schema
+vdbgo push
+
+# create and apply a migration
+vdbgo dev --name add_user_status
+
+# deploy pending migrations later
+vdbgo deploy</code></pre>
+      <p class="muted">Only databases declared in the schema file are touched. Undeclared databases stay untouched.</p>
     </section>
 
     <section class="section">

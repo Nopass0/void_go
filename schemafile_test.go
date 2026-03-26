@@ -57,3 +57,70 @@ func TestRenderAndParseSchemaFile(t *testing.T) {
 		t.Fatalf("expected blob field, got %+v", parsed.Models[0].Schema.Fields[1])
 	}
 }
+
+func TestPlanSchemaDiffKeepsUndeclaredDatabases(t *testing.T) {
+	current := &SchemaProject{
+		Models: []SchemaModel{
+			{
+				Name: "KeepUsers",
+				Schema: CollectionSchema{
+					Database:   "keep",
+					Collection: "users",
+					Model:      "KeepUsers",
+					Fields: []SchemaField{
+						{Name: "id", Type: FieldString, Required: true, IsID: true, MappedName: "_id"},
+					},
+				},
+			},
+			{
+				Name: "AppUsers",
+				Schema: CollectionSchema{
+					Database:   "app",
+					Collection: "users",
+					Model:      "AppUsers",
+					Fields: []SchemaField{
+						{Name: "id", Type: FieldString, Required: true, IsID: true, MappedName: "_id"},
+					},
+				},
+			},
+			{
+				Name: "AppLogs",
+				Schema: CollectionSchema{
+					Database:   "app",
+					Collection: "logs",
+					Model:      "AppLogs",
+					Fields: []SchemaField{
+						{Name: "id", Type: FieldString, Required: true, IsID: true, MappedName: "_id"},
+					},
+				},
+			},
+		},
+	}
+	desired := &SchemaProject{
+		Models: []SchemaModel{
+			{
+				Name: "AppUsers",
+				Schema: CollectionSchema{
+					Database:   "app",
+					Collection: "users",
+					Model:      "AppUsers",
+					Fields: []SchemaField{
+						{Name: "id", Type: FieldString, Required: true, IsID: true, MappedName: "_id"},
+						{Name: "email", Type: FieldString, Required: true},
+					},
+				},
+			},
+		},
+	}
+
+	plan := planSchemaDiff(current, desired, true)
+	if len(plan.Operations) != 2 {
+		t.Fatalf("expected 2 operations, got %d: %+v", len(plan.Operations), plan.Operations)
+	}
+	if plan.Operations[0].Type != SchemaOpSetSchema {
+		t.Fatalf("expected first op to update schema, got %+v", plan.Operations[0])
+	}
+	if plan.Operations[1].Type != SchemaOpDeleteCollection || plan.Operations[1].Database != "app" || plan.Operations[1].Collection != "logs" {
+		t.Fatalf("expected only app/logs drop, got %+v", plan.Operations[1])
+	}
+}
